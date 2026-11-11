@@ -28,7 +28,7 @@ void trace_add(int kind, int node, int from, int edge, int value) {
     trace_events[trace_length++] = {kind, node, from, edge, value};
 }
 
-struct Arc { int destination; int metres; int edge; int next; };
+struct Arc { int from; int destination; int metres; int edge; int next; };
 struct HeapItem { int node; int distance; };
 
 int node_count = 0;
@@ -37,6 +37,9 @@ int head[MAX_NODES];
 int tail[MAX_NODES];
 Arc arcs[MAX_ARCS];
 int blocked[MAX_EDGES];
+int node_x[MAX_NODES];
+int node_y[MAX_NODES];
+int has_position[MAX_NODES];
 
 int best[MAX_NODES];
 int parent_node[MAX_NODES];
@@ -51,10 +54,11 @@ int result_nodes[MAX_NODES];
 int result_edges[MAX_NODES];
 int result_length = 0;
 int result_metres = -1;
+int result_turns = 0;
 
 void append_arc(int from, int to, int metres, int edge) {
   const int position = arc_count++;
-  arcs[position] = {to, metres, edge, -1};
+  arcs[position] = {from, to, metres, edge, -1};
   if (head[from] < 0) head[from] = position;
   else arcs[tail[from]].next = position;
   tail[from] = position;
@@ -96,6 +100,153 @@ HeapItem heap_pop() {
   return first;
 }
 
+
+/*
+ * Fewest turns is NOT ordinary BFS: whether a step is a turn depends on
+ * the direction we entered the current vertex. One state per directed arc
+ * (plus a virtual start state) preserves that information.
+ * We count changes greater than ~30 degrees; small bends are ignored.
+ * Map coordinates are illustrative: real deployments need surveyed geometry.
+ */
+int turn_cost[MAX_ARCS + 1];
+int turn_distance[MAX_ARCS + 1];
+int turn_parent[MAX_ARCS + 1];
+int turn_done[MAX_ARCS + 1];
+int turn_heap[MAX_ARCS + 1];
+int turn_heap_position[MAX_ARCS + 1];
+int turn_heap_size = 0;
+
+int is_turn(int before, int at, int after) {
+  if (!has_position[before] || !has_position[at] || !has_position[after]) return 0;
+  const long long ax = static_cast<long long>(node_x[at]) - node_x[before];
+  const long long ay = static_cast<long long>(node_y[at]) - node_y[before];
+  const long long bx = static_cast<long long>(node_x[after]) - node_x[at];
+  const long long by = static_cast<long long>(node_y[after]) - node_y[at];
+  if ((ax == 0 && ay == 0) || (bx == 0 && by == 0)) return 0;
+  const long long cross = ax * by - ay * bx;
+  const long long dot = ax * bx + ay * by;
+  const long long abs_cross = cross < 0 ? -cross : cross;
+  // tan(30 deg) ~= 0.577. dot <= 0 also catches reversals.
+  return dot <= 0 || abs_cross * 1000 > dot * 577;
+}
+
+bool turn_less(int left, int right) {
+  return turn_cost[left] < turn_cost[right] ||
+         (turn_cost[left] == turn_cost[right] && turn_distance[left] < turn_distance[right]);
+}
+
+void turn_heap_swap(int a, int b) {
+  const int previous = turn_heap[a];
+  turn_heap[a] = turn_heap[b];
+  turn_heap[b] = previous;
+  turn_heap_position[turn_heap[a]] = a;
+  turn_heap_position[turn_heap[b]] = b;
+}
+
+void turn_heap_push_or_decrease(int state) {
+  int child = turn_heap_position[state];
+  if (child < 0) {
+    if (turn_heap_size >= MAX_ARCS + 1) return;
+    child = turn_heap_size++;
+    turn_heap[child] = state;
+    turn_heap_position[state] = child;
+  }
+  while (child > 0) {
+    const int parent = (child - 1) / 2;
+    if (!turn_less(turn_heap[child], turn_heap[parent])) break;
+    turn_heap_swap(child, parent);
+    child = parent;
+  }
+}
+
+int turn_heap_pop() {
+  const int first = turn_heap[0];
+  const int last = turn_heap[--turn_heap_size];
+  turn_heap_position[first] = -1;
+  if (turn_heap_size > 0) {
+    turn_heap[0] = last;
+    turn_heap_position[last] = 0;
+    int parent = 0;
+    while (true) {
+      const int left = parent * 2 + 1, right = left + 1;
+      int smallest = parent;
+      if (left < turn_heap_size && turn_less(turn_heap[left], turn_heap[smallest])) smallest = left;
+      if (right < turn_heap_size && turn_less(turn_heap[right], turn_heap[smallest])) smallest = right;
+      if (smallest == parent) break;
+      turn_heap_swap(parent, smallest);
+      parent = smallest;
+    }
+  }
+  return first;
+}
+
+int fewest_turns_route(int start, int destination) {
+  const int virtual_start = arc_count;
+  for (int i = 0; i <= arc_count; ++i) {
+    turn_cost[i] = INFINITY_METRES;
+    turn_distance[i] = INFINITY_METRES;
+    turn_parent[i] = -1;
+    turn_done[i] = 0;
+    turn_heap_position[i] = -1;
+  }
+  turn_heap_size = 0;
+  turn_cost[virtual_start] = 0;
+  turn_distance[virtual_start] = 0;
+  turn_heap_push_or_decrease(virtual_start);
+  int finish = -1;
+  while (turn_heap_size > 0) {
+    const int state = turn_heap_pop();
+    if (turn_done[state]) continue;
+    turn_done[state] = 1;
+    const int current = state == virtual_start ? start : arcs[state].destination;
+    trace_add(11, current, state == virtual_start ? -1 : arcs[state].from,
+              state == virtual_start ? -1 : arcs[state].edge, turn_cost[state]); // @trace:turn-visit
+    if (current == destination) { finish = state; break; }
+    for (int arc = head[current]; arc >= 0; arc = arcs[arc].next) {
+      const Arc connection = arcs[arc];
+      if (blocked[connection.edge]) {
+        trace_add(13, connection.destination, current, connection.edge, 0); // @trace:turn-closed
+        continue;
+      }
+      if (turn_done[arc]) continue;
+      const int extra = state == virtual_start ? 0 : is_turn(arcs[state].from, current, connection.destination);
+      const int next_turns = turn_cost[state] + extra;
+      const int next_metres = turn_distance[state] + connection.metres;
+      if (next_turns < turn_cost[arc] ||
+          (next_turns == turn_cost[arc] && next_metres < turn_distance[arc])) {
+        turn_cost[arc] = next_turns;
+        turn_distance[arc] = next_metres;
+        turn_parent[arc] = state;
+        turn_heap_push_or_decrease(arc);
+        trace_add(12, connection.destination, current, connection.edge, next_turns); // @trace:turn-relax
+      }
+    }
+  }
+  if (finish < 0) {
+    trace_add(9, destination, -1, -1, -1); // @trace:unreachable-turns
+    return 0;
+  }
+  int reversed[MAX_NODES];
+  int count = 0, cursor = finish;
+  while (cursor != virtual_start) {
+    if (cursor < 0 || count >= MAX_NODES - 1) return 0;
+    reversed[count++] = cursor;
+    cursor = turn_parent[cursor];
+  }
+  result_nodes[0] = start;
+  result_metres = 0;
+  for (int i = count - 1, output = 1; i >= 0; --i, ++output) {
+    const Arc connection = arcs[reversed[i]];
+    result_nodes[output] = connection.destination;
+    result_edges[output - 1] = connection.edge;
+    result_metres += connection.metres;
+  }
+  result_length = count + 1;
+  result_turns = turn_cost[finish];
+  trace_add(8, destination, -1, -1, result_turns); // @trace:complete
+  return result_length;
+}
+
 int build_result(int start, int destination) {
   int reverse_nodes[MAX_NODES];
   int reverse_edges[MAX_NODES];
@@ -129,8 +280,15 @@ int graph_reset(int nodes) {
   arc_count = 0;
   result_length = 0;
   result_metres = -1;
-  for (int i = 0; i < MAX_NODES; ++i) { head[i] = -1; tail[i] = -1; }
+  for (int i = 0; i < MAX_NODES; ++i) { head[i] = -1; tail[i] = -1; has_position[i] = 0; }
   for (int i = 0; i < MAX_EDGES; ++i) blocked[i] = 0;
+  return 1;
+}
+
+// Locations used to measure changes in heading without any database.
+int graph_set_node_position(int node, int x, int y) {
+  if (node < 0 || node >= node_count) return 0;
+  node_x[node] = x; node_y[node] = y; has_position[node] = 1;
   return 1;
 }
 
@@ -152,14 +310,16 @@ void graph_block_edge(int edge_index) {
   if (edge_index >= 0 && edge_index < MAX_EDGES) blocked[edge_index] = 1;
 }
 
-// mode 0: Dijkstra (minimum metres); mode 1: BFS (minimum segments).
+// mode 0: Dijkstra (minimum metres); 1: BFS (minimum segments);
+// mode 2: expanded-state Dijkstra (fewest ~30 degree turns, then metres).
 // Returns vertex count, or zero if invalid/unreachable.
 int graph_route(int start, int destination, int mode) {
   result_length = 0;
   result_metres = -1;
+  result_turns = 0;
   trace_length = 0;
   if (start < 0 || destination < 0 || start >= node_count ||
-      destination >= node_count || (mode != 0 && mode != 1)) return 0;
+      destination >= node_count || (mode != 0 && mode != 1 && mode != 2)) return 0;
   trace_add(1, start, -1, -1, 0); // @trace:start
   if (start == destination) {
     trace_add(10, start, -1, -1, 0); // @trace:already
@@ -175,6 +335,7 @@ int graph_route(int start, int destination, int mode) {
     parent_metres[i] = 0;
     seen[i] = 0;
   }
+  if (mode == 2) return fewest_turns_route(start, destination);
   if (mode == 1) {
     // Fixed-size FIFO queue with head/tail indexes.
     int front = 0;
@@ -239,7 +400,10 @@ int graph_route(int start, int destination, int mode) {
     }
   }
   trace_add(8, destination, -1, -1, 0); // @trace:complete
-  return build_result(start, destination);
+  const int length = build_result(start, destination);
+  for (int i = 2; i < length; ++i)
+    result_turns += is_turn(result_nodes[i - 2], result_nodes[i - 1], result_nodes[i]);
+  return length;
 }
 
 int graph_result_node(int index) {
@@ -249,6 +413,12 @@ int graph_result_edge(int index) {
   return index >= 0 && index < result_length - 1 ? result_edges[index] : -1;
 }
 int graph_result_metres() { return result_metres; }
+int graph_result_turns() { return result_turns; }
+int graph_result_turn(int path_index) {
+  if (path_index < 2 || path_index >= result_length) return 0;
+  return is_turn(result_nodes[path_index - 2], result_nodes[path_index - 1],
+                 result_nodes[path_index]);
+}
 
 // Disabled during normal routing; enabled only when opening the visualizer.
 void graph_trace_set(int enabled) { trace_enabled = enabled ? 1 : 0; trace_length = 0; }
