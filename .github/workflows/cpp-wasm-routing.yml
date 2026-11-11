@@ -1,0 +1,60 @@
+name: C++ WebAssembly routing
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'project/**'
+      - '.github/workflows/cpp-wasm-routing.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'project/**'
+      - '.github/workflows/cpp-wasm-routing.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  verify-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: project/package-lock.json
+      - name: Install LLVM WebAssembly compiler
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang lld
+      - name: Install dependencies
+        working-directory: project
+        run: npm ci
+      - name: Compile the C++ WebAssembly engine
+        working-directory: project
+        run: npm run build:wasm
+      - name: Run real WebAssembly routing integration tests
+        working-directory: project
+        run: npm test
+      - name: Build React + WebAssembly site
+        working-directory: project
+        run: npm run build
+      - name: Publish static files to GitHub Pages branch root
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          # Preserve the current branch-root GitHub Pages deployment model.
+          # Remove obsolete Vite hashed bundles, then copy the new build.
+          find . -maxdepth 1 -type f \( -name 'index-*.js' -o -name 'index-*.css' \) -delete
+          cp -R project/dist/. .
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A -- index.html 'index-*.js' 'index-*.css' routing.wasm .nojekyll
+          if ! git diff --cached --quiet; then
+            git commit -m "Publish C++ WebAssembly campus navigator build"
+            git push
+          fi

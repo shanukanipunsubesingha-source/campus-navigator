@@ -1,0 +1,218 @@
+// Wayfinder C++17 routing engine, compiled to standalone browser WebAssembly.
+// Array-backed adjacency lists, a FIFO BFS queue, and a binary min-heap for
+// Dijkstra. Every arc stores its exact edge index so parallel paths work.
+
+// Freestanding wasm32 does not link libc; supply Clang's required intrinsic.
+extern "C" void* memset(void* destination, int value, __SIZE_TYPE__ size) {
+  volatile unsigned char* bytes = static_cast<volatile unsigned char*>(destination);
+  for (__SIZE_TYPE__ i = 0; i < size; ++i) bytes[i] = static_cast<unsigned char>(value);
+  return destination;
+}
+
+namespace {
+constexpr int MAX_NODES = 256;
+constexpr int MAX_EDGES = 1024;
+constexpr int MAX_ARCS = 2 * MAX_EDGES;
+constexpr int MAX_HEAP = 8192;
+constexpr int INFINITY_METRES = 0x3fffffff;
+
+struct Arc { int destination; int metres; int edge; int next; };
+struct HeapItem { int node; int distance; };
+
+int node_count = 0;
+int arc_count = 0;
+int head[MAX_NODES];
+int tail[MAX_NODES];
+Arc arcs[MAX_ARCS];
+int blocked[MAX_EDGES];
+
+int best[MAX_NODES];
+int parent_node[MAX_NODES];
+int parent_edge[MAX_NODES];
+int parent_metres[MAX_NODES];
+int seen[MAX_NODES];
+int queue_nodes[MAX_NODES];
+HeapItem heap[MAX_HEAP];
+int heap_size = 0;
+
+int result_nodes[MAX_NODES];
+int result_edges[MAX_NODES];
+int result_length = 0;
+int result_metres = -1;
+
+void append_arc(int from, int to, int metres, int edge) {
+  const int position = arc_count++;
+  arcs[position] = {to, metres, edge, -1};
+  if (head[from] < 0) head[from] = position;
+  else arcs[tail[from]].next = position;
+  tail[from] = position;
+}
+
+void heap_push(int node, int distance) {
+  if (heap_size >= MAX_HEAP) return;
+  int child = heap_size++;
+  heap[child] = {node, distance};
+  while (child > 0) {
+    const int parent = (child - 1) / 2;
+    if (heap[parent].distance <= heap[child].distance) break;
+    const HeapItem previous = heap[parent];
+    heap[parent] = heap[child];
+    heap[child] = previous;
+    child = parent;
+  }
+}
+
+HeapItem heap_pop() {
+  const HeapItem first = heap[0];
+  const HeapItem last = heap[--heap_size];
+  if (heap_size > 0) {
+    heap[0] = last;
+    int parent = 0;
+    while (true) {
+      const int left = 2 * parent + 1;
+      const int right = left + 1;
+      int smallest = parent;
+      if (left < heap_size && heap[left].distance < heap[smallest].distance) smallest = left;
+      if (right < heap_size && heap[right].distance < heap[smallest].distance) smallest = right;
+      if (smallest == parent) break;
+      const HeapItem previous = heap[parent];
+      heap[parent] = heap[smallest];
+      heap[smallest] = previous;
+      parent = smallest;
+    }
+  }
+  return first;
+}
+
+int build_result(int start, int destination) {
+  int reverse_nodes[MAX_NODES];
+  int reverse_edges[MAX_NODES];
+  int count = 0;
+  int cursor = destination;
+  int metres = 0;
+  while (cursor != start) {
+    if (cursor < 0 || count >= node_count || parent_node[cursor] < 0) return 0;
+    reverse_nodes[count] = cursor;
+    reverse_edges[count] = parent_edge[cursor];
+    metres += parent_metres[cursor];
+    ++count;
+    cursor = parent_node[cursor];
+  }
+  result_nodes[0] = start;
+  for (int i = count - 1, output = 1; i >= 0; --i, ++output) {
+    result_nodes[output] = reverse_nodes[i];
+    result_edges[output - 1] = reverse_edges[i];
+  }
+  result_length = count + 1;
+  result_metres = metres;
+  return result_length;
+}
+} // namespace
+
+extern "C" {
+// Returns 1 for a valid graph, 0 for an invalid vertex count.
+int graph_reset(int nodes) {
+  if (nodes <= 0 || nodes > MAX_NODES) return 0;
+  node_count = nodes;
+  arc_count = 0;
+  result_length = 0;
+  result_metres = -1;
+  for (int i = 0; i < MAX_NODES; ++i) { head[i] = -1; tail[i] = -1; }
+  for (int i = 0; i < MAX_EDGES; ++i) blocked[i] = 0;
+  return 1;
+}
+
+// Undirected edge. Keep the original edge index to handle parallel walkways.
+int graph_add_edge(int from, int to, int metres, int edge_index) {
+  if (from < 0 || to < 0 || from >= node_count || to >= node_count ||
+      metres <= 0 || edge_index < 0 || edge_index >= MAX_EDGES ||
+      arc_count + 2 > MAX_ARCS) return 0;
+  append_arc(from, to, metres, edge_index);
+  append_arc(to, from, metres, edge_index);
+  return 1;
+}
+
+void graph_clear_blocked() {
+  for (int i = 0; i < MAX_EDGES; ++i) blocked[i] = 0;
+}
+
+void graph_block_edge(int edge_index) {
+  if (edge_index >= 0 && edge_index < MAX_EDGES) blocked[edge_index] = 1;
+}
+
+// mode 0: Dijkstra (minimum metres); mode 1: BFS (minimum segments).
+// Returns vertex count, or zero if invalid/unreachable.
+int graph_route(int start, int destination, int mode) {
+  result_length = 0;
+  result_metres = -1;
+  if (start < 0 || destination < 0 || start >= node_count ||
+      destination >= node_count || (mode != 0 && mode != 1)) return 0;
+  if (start == destination) {
+    result_nodes[0] = start;
+    result_length = 1;
+    result_metres = 0;
+    return 1;
+  }
+  for (int i = 0; i < node_count; ++i) {
+    best[i] = INFINITY_METRES;
+    parent_node[i] = -1;
+    parent_edge[i] = -1;
+    parent_metres[i] = 0;
+    seen[i] = 0;
+  }
+  if (mode == 1) {
+    // Fixed-size FIFO queue with head/tail indexes.
+    int front = 0;
+    int back = 0;
+    queue_nodes[back++] = start;
+    seen[start] = 1;
+    while (front < back) {
+      const int current = queue_nodes[front++];
+      if (current == destination) break;
+      for (int arc = head[current]; arc >= 0; arc = arcs[arc].next) {
+        const Arc connection = arcs[arc];
+        if (blocked[connection.edge] || seen[connection.destination]) continue;
+        seen[connection.destination] = 1;
+        parent_node[connection.destination] = current;
+        parent_edge[connection.destination] = connection.edge;
+        parent_metres[connection.destination] = connection.metres;
+        queue_nodes[back++] = connection.destination;
+      }
+    }
+    if (!seen[destination]) return 0;
+  } else {
+    // Dijkstra, using a binary min-heap priority queue.
+    best[start] = 0;
+    heap_size = 0;
+    heap_push(start, 0);
+    while (heap_size > 0) {
+      const HeapItem current = heap_pop();
+      if (seen[current.node]) continue;
+      seen[current.node] = 1;
+      if (current.node == destination) break;
+      for (int arc = head[current.node]; arc >= 0; arc = arcs[arc].next) {
+        const Arc connection = arcs[arc];
+        if (blocked[connection.edge] || seen[connection.destination]) continue;
+        const int candidate = best[current.node] + connection.metres;
+        if (candidate < best[connection.destination]) {
+          best[connection.destination] = candidate;
+          parent_node[connection.destination] = current.node;
+          parent_edge[connection.destination] = connection.edge;
+          parent_metres[connection.destination] = connection.metres;
+          heap_push(connection.destination, candidate);
+        }
+      }
+    }
+    if (best[destination] == INFINITY_METRES) return 0;
+  }
+  return build_result(start, destination);
+}
+
+int graph_result_node(int index) {
+  return index >= 0 && index < result_length ? result_nodes[index] : -1;
+}
+int graph_result_edge(int index) {
+  return index >= 0 && index < result_length - 1 ? result_edges[index] : -1;
+}
+int graph_result_metres() { return result_metres; }
+} // extern C

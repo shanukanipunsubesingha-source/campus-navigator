@@ -1,3 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { initializeRoutingEngine } from '../src/algorithms/wasmRouter.js';
+
+// Exercise the actual C++ WebAssembly binary, not the previous JS algorithm.
+await initializeRoutingEngine(readFileSync(new URL('../public/routing.wasm', import.meta.url)));
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { dijkstra, breadthFirstSearch, edgeIdsForPath } from '../src/algorithms/routing.js';
