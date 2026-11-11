@@ -15,6 +15,18 @@ constexpr int MAX_EDGES = 1024;
 constexpr int MAX_ARCS = 2 * MAX_EDGES;
 constexpr int MAX_HEAP = 8192;
 constexpr int INFINITY_METRES = 0x3fffffff;
+// Native events for the optional teaching visualizer.
+constexpr int MAX_TRACE = 8192;
+// 1 start; 2 BFS visit; 3 BFS enqueue; 4 Dijkstra visit; 5 relax;
+// 6 BFS closed; 7 Dijkstra closed; 8 complete; 9 unreachable; 10 same node.
+struct TraceEvent { int kind; int node; int from; int edge; int value; };
+TraceEvent trace_events[MAX_TRACE];
+int trace_length = 0;
+int trace_enabled = 0;
+void trace_add(int kind, int node, int from, int edge, int value) {
+  if (trace_enabled && trace_length < MAX_TRACE)
+    trace_events[trace_length++] = {kind, node, from, edge, value};
+}
 
 struct Arc { int destination; int metres; int edge; int next; };
 struct HeapItem { int node; int distance; };
@@ -145,9 +157,12 @@ void graph_block_edge(int edge_index) {
 int graph_route(int start, int destination, int mode) {
   result_length = 0;
   result_metres = -1;
+  trace_length = 0;
   if (start < 0 || destination < 0 || start >= node_count ||
       destination >= node_count || (mode != 0 && mode != 1)) return 0;
+  trace_add(1, start, -1, -1, 0); // @trace:start
   if (start == destination) {
+    trace_add(10, start, -1, -1, 0); // @trace:already
     result_nodes[0] = start;
     result_length = 1;
     result_metres = 0;
@@ -168,18 +183,27 @@ int graph_route(int start, int destination, int mode) {
     seen[start] = 1;
     while (front < back) {
       const int current = queue_nodes[front++];
+      trace_add(2, current, -1, -1, 0); // @trace:bfs-visit
       if (current == destination) break;
       for (int arc = head[current]; arc >= 0; arc = arcs[arc].next) {
         const Arc connection = arcs[arc];
-        if (blocked[connection.edge] || seen[connection.destination]) continue;
+        if (blocked[connection.edge]) {
+          trace_add(6, connection.destination, current, connection.edge, 0); // @trace:bfs-closed
+          continue;
+        }
+        if (seen[connection.destination]) continue;
         seen[connection.destination] = 1;
         parent_node[connection.destination] = current;
         parent_edge[connection.destination] = connection.edge;
         parent_metres[connection.destination] = connection.metres;
         queue_nodes[back++] = connection.destination;
+        trace_add(3, connection.destination, current, connection.edge, connection.metres); // @trace:bfs-enqueue
       }
     }
-    if (!seen[destination]) return 0;
+    if (!seen[destination]) {
+      trace_add(9, destination, -1, -1, -1); // @trace:unreachable-bfs
+      return 0;
+    }
   } else {
     // Dijkstra, using a binary min-heap priority queue.
     best[start] = 0;
@@ -189,10 +213,15 @@ int graph_route(int start, int destination, int mode) {
       const HeapItem current = heap_pop();
       if (seen[current.node]) continue;
       seen[current.node] = 1;
+      trace_add(4, current.node, -1, -1, current.distance); // @trace:dijkstra-visit
       if (current.node == destination) break;
       for (int arc = head[current.node]; arc >= 0; arc = arcs[arc].next) {
         const Arc connection = arcs[arc];
-        if (blocked[connection.edge] || seen[connection.destination]) continue;
+        if (blocked[connection.edge]) {
+          trace_add(7, connection.destination, current.node, connection.edge, 0); // @trace:dijkstra-closed
+          continue;
+        }
+        if (seen[connection.destination]) continue;
         const int candidate = best[current.node] + connection.metres;
         if (candidate < best[connection.destination]) {
           best[connection.destination] = candidate;
@@ -200,11 +229,16 @@ int graph_route(int start, int destination, int mode) {
           parent_edge[connection.destination] = connection.edge;
           parent_metres[connection.destination] = connection.metres;
           heap_push(connection.destination, candidate);
+          trace_add(5, connection.destination, current.node, connection.edge, candidate); // @trace:dijkstra-relax
         }
       }
     }
-    if (best[destination] == INFINITY_METRES) return 0;
+    if (best[destination] == INFINITY_METRES) {
+      trace_add(9, destination, -1, -1, -1); // @trace:unreachable-dijkstra
+      return 0;
+    }
   }
+  trace_add(8, destination, -1, -1, 0); // @trace:complete
   return build_result(start, destination);
 }
 
@@ -215,4 +249,18 @@ int graph_result_edge(int index) {
   return index >= 0 && index < result_length - 1 ? result_edges[index] : -1;
 }
 int graph_result_metres() { return result_metres; }
+
+// Disabled during normal routing; enabled only when opening the visualizer.
+void graph_trace_set(int enabled) { trace_enabled = enabled ? 1 : 0; trace_length = 0; }
+int graph_trace_count() { return trace_length; }
+int graph_trace_field(int index, int field) {
+  if (index < 0 || index >= trace_length) return -1;
+  const TraceEvent event = trace_events[index];
+  if (field == 0) return event.kind;
+  if (field == 1) return event.node;
+  if (field == 2) return event.from;
+  if (field == 3) return event.edge;
+  if (field == 4) return event.value;
+  return -1;
+}
 } // extern C

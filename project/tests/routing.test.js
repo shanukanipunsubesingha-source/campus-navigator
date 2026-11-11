@@ -136,3 +136,37 @@ test('invalid stored place IDs cannot crash the planner', () => {
     }
   }
 });
+
+
+test('actual C++ WebAssembly trace matches each computed route', async () => {
+  const { traceRouting } = await import('../src/algorithms/wasmRouter.js');
+  for (const blocked of [new Set(), new Set(['e-gym-sports']), new Set(['e-gate-west', 'e-quad-plaza'])]) {
+    for (const [mode, algorithm, visit, advance] of [
+      ['fastest', dijkstra, 4, 5],
+      ['fewest', breadthFirstSearch, 2, 3],
+    ]) {
+      for (const [from, to] of [['gate', 'engineering'], ['gym', 'sports'], ['bus', 'library']]) {
+        const expected = algorithm(from, to, blocked);
+        const { route, events } = traceRouting(from, to, blocked, mode);
+        assert.deepEqual(route, expected, 'the teaching trace must not affect the real route');
+        assert.equal(events[0]?.kind, 1);
+        assert.ok(events.some((e) => e.kind === visit), 'C++ recorded a visit');
+        if (route.path) assert.ok(events.some((e) => e.kind === advance), 'C++ recorded a frontier update');
+        assert.ok(events.every((e) => !e.edgeId || edges.some((edge) => edge.id === e.edgeId)), 'trace uses actual walkway IDs');
+        assert.equal(events.at(-1)?.kind, route.path ? 8 : 9);
+      }
+    }
+  }
+});
+
+test('C++ trace captures same-node and blocked unreachable paths', async () => {
+  const { traceRouting } = await import('../src/algorithms/wasmRouter.js');
+  const same = traceRouting('gate', 'gate', new Set(edges.map((e) => e.id)));
+  assert.deepEqual(same.route, { path: ['gate'], edgeIds: [], distance: 0 });
+  assert.deepEqual(same.events.map((e) => e.kind), [1, 10]);
+  const isolate = new Set(edges.filter((e) => e.from === 'gate' || e.to === 'gate').map((e) => e.id));
+  const unreachable = traceRouting('gate', 'science', isolate, 'fewest');
+  assert.equal(unreachable.route.path, null);
+  assert.equal(unreachable.events.at(-1)?.kind, 9);
+  assert.ok(unreachable.events.some((e) => e.kind === 6), 'C++ emitted blocked-edge events');
+});

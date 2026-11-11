@@ -8,7 +8,7 @@ const target = resolve(project, 'public/routing.wasm');
 const functions = [
   'graph_reset', 'graph_add_edge', 'graph_clear_blocked',
   'graph_block_edge', 'graph_route', 'graph_result_node',
-  'graph_result_edge', 'graph_result_metres',
+  'graph_result_edge', 'graph_result_metres', 'graph_trace_set', 'graph_trace_count', 'graph_trace_field',
 ];
 const args = [
   '--target=wasm32', '-std=c++17', '-O2', '-fno-exceptions', '-fno-rtti',

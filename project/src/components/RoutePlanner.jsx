@@ -1,12 +1,14 @@
-import { ArrowDownUp, ArrowRight, Check, Clock3, Construction, History, Info, Layers3, LocateFixed, Minus, Navigation, Plus, RotateCcw } from 'lucide-react';
+import { ArrowDownUp, ArrowRight, Check, Clock3, Code2, Construction, History, Info, Layers3, LocateFixed, Minus, Navigation, Plus, RotateCcw } from 'lucide-react';
 import { useState } from 'react';
 import CampusMap from './CampusMap';
+import AlgorithmVisualizer from './AlgorithmVisualizer';
 import PlacePicker from './PlacePicker';
 import { Eyebrow, Reveal } from './UI';
 import { edges, nodeById, nodes } from '../data/campusGraph';
 
 export default function RoutePlanner({ navigator: nav, onGuide }) {
   const [zoom, setZoom] = useState(1);
+  const [watching, setWatching] = useState(false);
   const { start, destination, mode, route, blocked, maintenance } = nav;
   const arrived = start === destination;
   const minutes = Math.ceil(route.distance / 75);
@@ -19,6 +21,7 @@ export default function RoutePlanner({ navigator: nav, onGuide }) {
         <span className="field-label mt-7 block">YOUR ROUTE PREFERENCE</span>
         <div className="mode-switch" role="group" aria-label="Route preference"><button aria-pressed={mode === 'fastest'} onClick={() => nav.setMode('fastest')}><Navigation size={14} />Shortest distance</button><button aria-pressed={mode === 'fewest'} onClick={() => nav.setMode('fewest')}><Layers3 size={14} />Fewest segments</button></div>
         <p className="mode-note"><Info size={12} />{mode === 'fastest' ? 'Dijkstra finds the shortest walk in metres.' : 'BFS finds the fewest walkway segments.'}</p>
+        <button className="trace-launch" onClick={() => setWatching(true)} aria-label="Watch the C++ DSA algorithm step by step"><Code2 size={16} /> Watch DSA in Action</button>
         <div className="route-result">
           <p className="sr-only" aria-live="polite" aria-atomic="true">{!route.path ? 'No open route found. Reopen a walkway or choose another place.' : arrived ? `You are already at ${nodeById[destination].name}.` : `Route ready from ${nodeById[start].name} to ${nodeById[destination].name}. ${route.distance} metres, about ${minutes} minutes.`}</p>
           {route.path ? <><div className="route-ready"><span><Check size={13} />{arrived ? 'YOU’RE ALREADY HERE' : 'YOUR ROUTE IS READY'}</span><span>{route.path.length - 1} segments</span></div><div className="trip-metrics"><div><strong>{formatDistance(route.distance)}</strong><span>WALKING DISTANCE</span></div><div><strong>{minutes}<small> min</small></strong><span>ESTIMATED WALK</span></div></div><div className="route-summary"><span>{nodeById[start].name}</span><ArrowRight size={15} /><strong>{nodeById[destination].name}</strong></div><div className="steps-label"><span>YOUR WALK</span><span>{route.path.length - 1} STEPS</span></div>{arrived ? <p className="arrived-note">Choose a different destination to explore the campus.</p> : <ol className="route-steps">{route.path.slice(1).map((id, index) => <li key={id}><span>{String(index + 1).padStart(2, '0')}</span><p>Continue to <strong>{nodeById[id].name}</strong></p></li>)}</ol>}</> : <div className="no-route"><Construction size={24} /><h4>No open route found.</h4><p>A walkway on your route is closed. Try another destination, or reopen the paths.</p><button className="text-link" onClick={nav.reopenAll}>Reopen all walkways <ArrowRight size={15} /></button></div>}
@@ -32,6 +35,7 @@ export default function RoutePlanner({ navigator: nav, onGuide }) {
       </div>
     </Reveal>
     <Reveal className="recent-routes"><div className="recent-title"><History size={18} /><span>RECENT JOURNEYS<small>{nav.savedLocally ? 'Saved on this device' : 'Saved for this visit'}</small></span></div><div className="recent-items">{nav.history.length ? nav.history.slice(0, 3).map((item) => <button onClick={() => nav.restore(item)} key={`${item.from}-${item.to}-${item.mode}`}><span>{nodeById[item.from].name}<ArrowRight size={12} /><strong>{nodeById[item.to].name}</strong></span><small>{item.mode === 'fastest' ? 'Shortest distance' : 'Fewest segments'}<ArrowRight size={13} /></small></button>) : <p><Clock3 size={15} />The routes you explore will appear here.</p>}</div></Reveal>
+    {watching && <AlgorithmVisualizer start={start} destination={destination} mode={mode} blocked={blocked} onClose={() => setWatching(false)} />}
   </div></section>;
 }
 
