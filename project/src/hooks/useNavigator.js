@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { nodeById } from '../data/campusGraph';
-import { breadthFirstSearch, dijkstra } from '../algorithms/routing';
+import { breadthFirstSearch, dijkstra, fewestTurns } from '../algorithms/routing';
 
 const key = 'campus-wayfinder-history';
 const validPlaceId = (id) => typeof id === 'string' && Object.hasOwn(nodeById, id);
-const validItem = (item) => item && typeof item === 'object' && validPlaceId(item.from) && validPlaceId(item.to) && ['fastest', 'fewest'].includes(item.mode);
+const validItem = (item) => item && typeof item === 'object' && validPlaceId(item.from) && validPlaceId(item.to) && ['fastest', 'fewest', 'turns'].includes(item.mode);
 
 function normalizeHistory(items) {
   if (!Array.isArray(items)) return [];
@@ -36,7 +36,7 @@ export function useNavigator() {
   const [maintenance, setMaintenance] = useState(false);
   const [history, setHistory] = useState(readHistory);
   const [savedLocally, setSavedLocally] = useState(true);
-  const route = useMemo(() => (mode === 'fastest' ? dijkstra : breadthFirstSearch)(start, destination, blocked), [start, destination, mode, blocked]);
+  const route = useMemo(() => (mode === 'fastest' ? dijkstra : mode === 'fewest' ? breadthFirstSearch : fewestTurns)(start, destination, blocked), [start, destination, mode, blocked]);
   const routeEdges = useMemo(() => new Set(route.edgeIds || []), [route]);
 
   useEffect(() => {
