@@ -7,19 +7,21 @@ import cppSource from '../../cpp/routing_engine.cpp?raw';
 import './styles-trace.css';
 
 const lines = cppSource.split(/\r?\n/);
-const markers = { 1:'start', 2:'bfs-visit', 3:'bfs-enqueue', 4:'dijkstra-visit', 5:'dijkstra-relax', 6:'bfs-closed', 7:'dijkstra-closed', 8:'complete', 10:'already' };
-const linesByMarker = Object.fromEntries([...Object.values(markers), 'unreachable-bfs','unreachable-dijkstra'].map(key => [key, lines.findIndex(line => line.includes('@trace:' + key)) + 1]));
+const markers = { 1:'start', 2:'bfs-visit', 3:'bfs-enqueue', 4:'dijkstra-visit', 5:'dijkstra-relax', 6:'bfs-closed', 7:'dijkstra-closed', 8:'complete', 10:'already', 11:'turn-visit', 12:'turn-relax', 13:'turn-closed' };
+const linesByMarker = Object.fromEntries([...Object.values(markers), 'unreachable-bfs','unreachable-dijkstra','unreachable-turns'].map(key => [key, lines.findIndex(line => line.includes('@trace:' + key)) + 1]));
 const place = id => nodeById[id]?.name ?? id ?? '—';
 
 function explanation(event, mode, route) {
   switch(event.kind) {
-    case 1: return ['Start the search', mode === 'fewest' ? 'BFS starts with a FIFO queue to find the fewest segments.' : 'Dijkstra starts with a binary min-heap to find the shortest walking distance.'];
+    case 1: return ['Start the search', mode === 'fewest' ? 'BFS starts with a FIFO queue to find the fewest segments.' : mode === 'turns' ? 'Direction-aware Dijkstra starts with a min-heap. Its state remembers the incoming walkway.' : 'Dijkstra starts with a binary min-heap to find the shortest walking distance.'];
     case 2: return ['BFS visits ' + place(event.node), 'Remove the first queued node and inspect its connected walkways.'];
     case 3: return ['Enqueue ' + place(event.node), 'Discover it from ' + place(event.from) + ', mark it visited, and place it at the back of the FIFO queue.'];
     case 4: return ['Dijkstra settles ' + place(event.node), 'The shortest known distance from the start is ' + event.value + ' m.'];
     case 5: return ['Improve ' + place(event.node), 'Relax ' + place(event.from) + ' → ' + place(event.node) + '. New tentative distance: ' + event.value + ' m.'];
-    case 6: case 7: return ['Skip a closed path', place(event.from) + ' → ' + place(event.node) + ' is closed. This edge is ignored.'];
-    case 8: return ['Search complete', 'Final route: ' + route.distance + ' m across ' + route.edgeIds.length + ' segments.'];
+    case 11: return ['Inspect arrival at ' + place(event.node), 'C++ selects the state with the fewest turns so far (' + event.value + '). The state remembers which walkway was used to arrive.'];
+    case 12: return ['Explore a way to ' + place(event.node), 'From ' + place(event.from) + ', the candidate route has ' + event.value + ' turns. The algorithm compares turn count first, then metres.'];
+    case 6: case 7: case 13: return ['Skip a closed path', place(event.from) + ' → ' + place(event.node) + ' is closed. This edge is ignored.'];
+    case 8: return ['Search complete', 'Final route: ' + route.distance + ' m across ' + route.edgeIds.length + ' segments.' + (mode === 'turns' ? ' Significant turns: ' + route.turns + '.' : '')];
     case 9: return ['No open route', 'The search could not reach ' + place(event.node) + '. Try reopening a walkway.'];
     case 10: return ['Already at destination', 'No walking required: distance is zero.'];
     default: return ['Algorithm operation', 'A real C++ search step.'];
@@ -29,8 +31,8 @@ function explanation(event, mode, route) {
 function TraceMap({ start, destination, events, step, blocked, route }) {
   const current = events[step], visited = new Set(), frontier = new Set([start]);
   for (const e of events.slice(0,step+1)) {
-    if (e.kind === 2 || e.kind === 4) {visited.add(e.node);frontier.delete(e.node);}
-    if ((e.kind === 3 || e.kind === 5) && !visited.has(e.node)) frontier.add(e.node);
+    if (e.kind === 2 || e.kind === 4 || e.kind === 11) {visited.add(e.node);frontier.delete(e.node);}
+    if ((e.kind === 3 || e.kind === 5 || e.kind === 12) && !visited.has(e.node)) frontier.add(e.node);
   }
   const pathEdges = current.kind === 8 ? new Set(route.edgeIds) : new Set();
   return <div className="trace-graph">
@@ -54,15 +56,15 @@ export default function AlgorithmVisualizer({ start, destination, mode, blocked,
   const [step,setStep] = useState(0), [playing,setPlaying] = useState(false), [speed,setSpeed]=useState(850), [showCode,setShowCode]=useState(true);
   const codePane=useRef(null), last=Math.max(0,events.length-1), event=events[step];
   const [heading,detail]=explanation(event,mode,route);
-  const sourceLine=linesByMarker[event.kind===9?(mode==='fewest'?'unreachable-bfs':'unreachable-dijkstra'):markers[event.kind]] || 0;
-  const visitCount=new Set(events.slice(0,step+1).filter(e=>e.kind===2||e.kind===4).map(e=>e.node)).size;
+  const sourceLine=linesByMarker[event.kind===9?(mode==='fewest'?'unreachable-bfs':mode==='turns'?'unreachable-turns':'unreachable-dijkstra'):markers[event.kind]] || 0;
+  const visitCount=new Set(events.slice(0,step+1).filter(e=>e.kind===2||e.kind===4||e.kind===11).map(e=>e.node)).size;
   useEffect(()=>{if (!playing) return;const timer=setInterval(()=>setStep(x=>Math.min(x+1,last)),speed);return ()=>clearInterval(timer);},[playing,last,speed]);
   useEffect(()=>{if(step>=last)setPlaying(false);},[step,last]);
   useEffect(()=>{const pane=codePane.current,active=pane?.querySelector('[data-current="true"]');if(active) pane.scrollTop=active.offsetTop-pane.offsetTop-pane.clientHeight/2;},[sourceLine,showCode]);
   const seek=x=>{setPlaying(false);setStep(Math.max(0,Math.min(last,x)));};
   return <Modal title="Watch DSA in action" className="trace-modal" onClose={onClose}>
     <div className="trace-body">
-      <div className="trace-intro"><strong>LIVE C++ / WEBASSEMBLY TRACE</strong><span>{mode==='fewest'?'BFS + FIFO queue':'Dijkstra + min-heap'} · {place(start)} → {place(destination)}</span><small>{blocked.size} closed paths · {events.length} C++ events</small></div>
+      <div className="trace-intro"><strong>LIVE C++ / WEBASSEMBLY TRACE</strong><span>{mode==='fewest'?'BFS + FIFO queue':mode==='turns'?'Fewest turns + direction-aware min-heap':'Dijkstra + min-heap'} · {place(start)} → {place(destination)}</span><small>{blocked.size} closed paths · {events.length} C++ events</small></div>
       <div className="trace-layout">
         <div className="trace-visual">
           <div className="trace-heading"><h3>Campus graph</h3><small>{visitCount} / {nodes.length} visited</small></div>

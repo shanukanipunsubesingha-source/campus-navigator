@@ -57,3 +57,14 @@ The route planner has a **Watch DSA in Action** button. This opens a responsive 
 For the 42-second landscape opening film, upload the provided **24.3 MB, 1920×1080, 30 fps H.264** video to `project/public/hero-desktop.mp4` on this branch before merging its pull request. The existing `project/public/hero.mp4` remains the portrait-oriented mobile background. The React header uses the new file only above 700 px, and falls back to the previous film if the new file cannot load.
 
 The GitHub Pages build copies files from `project/public/` to the published site root. The video tag uses `preload="metadata"`, not a forced full 24 MB download. Users' actual buffering depends on network and decoder performance. If further optimization is needed, encode a shorter loop or serve responsive variants instead of a full 4K background.
+
+
+## Fewest turns (direction-aware graph search)
+
+The planner now offers **Shortest distance (Dijkstra)**, **Fewest segments (BFS)**, and **Fewest turns (modified Dijkstra)**. Fewest turns uses C++ WebAssembly, the same arrays and adjacency lists, and a binary min-heap.
+
+A simple node-only visited array is not sufficient for turn routing: the decision to turn depends on the *incoming direction*. The algorithm therefore uses one search state per incoming **directed edge**, plus the start state. It minimizes the pair `(significant turns, total metres)` in lexicographic order—always minimize turns first, then choose the shorter route among ties. The `is_turn()` routine calculates the change of direction from three map coordinates, counting a heading change of approximately **30° or more** as a turn. Tiny bends do not count. Directions are calculated from the schematic demo map, **not surveyed physical walkways**, so turn instructions are approximate.
+
+The optional DSA visualizer shows C++ visit/relax/closed-edge trace events for this third mode. The planner displays turn totals and highlights where the route requires a direction change. The existing two modes, walkway closures, mobile layout, and opening film are preserved. No database or backend is added.
+
+Run `npm run build:wasm && npm test && npm run build` from `project/` before deploying; GitHub Actions automatically does this during PR validation.
