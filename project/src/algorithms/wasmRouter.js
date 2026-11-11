@@ -66,3 +66,33 @@ export function edgeIdsForPath(path, blockedEdgeIds = new Set()) {
       !best || entry.distance < best.distance ? entry : best, null)?.edgeId;
   }).filter(Boolean);
 }
+
+
+/**
+ * Record real algorithm events from the C++ WebAssembly engine, on demand.
+ * The normal planner never traces and does not incur recording overhead.
+ */
+export function traceRouting(start, destination, blockedEdgeIds = new Set(), mode = 'fastest') {
+  if (!engine) throw new Error('C++ routing engine is not initialized');
+  if (mode !== 'fastest' && mode !== 'fewest') throw new Error('Unknown routing mode');
+  if (!nodeIndices.has(start) || !nodeIndices.has(destination)) return { route: noRoute(), events: [] };
+  engine.graph_trace_set(1);
+  try {
+    const route = findRoute(start, destination, blockedEdgeIds, mode === 'fastest' ? 0 : 1);
+    const total = engine.graph_trace_count();
+    const events = Array.from({ length: total }, (_, index) => {
+      const get = (field) => engine.graph_trace_field(index, field);
+      const node = get(1), from = get(2), edge = get(3);
+      return {
+        kind: get(0),
+        node: node >= 0 ? nodes[node].id : null,
+        from: from >= 0 ? nodes[from].id : null,
+        edgeId: edge >= 0 ? edges[edge].id : null,
+        value: get(4),
+      };
+    });
+    return { route, events };
+  } finally {
+    engine.graph_trace_set(0);
+  }
+}
