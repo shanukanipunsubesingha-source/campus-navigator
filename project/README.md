@@ -51,3 +51,9 @@ No accounts, location tracking or server-side data collection are included.
 The route planner has a **Watch DSA in Action** button. This opens a responsive educational viewer with step-through and play/pause controls, speed options, graph highlights, and the full C++ source with an active-line indicator. Trace events (visits, BFS enqueues, Dijkstra relaxations, ignored closures, and completion) are emitted by the **real C++ WebAssembly engine**, rather than simulated by JavaScript. Ordinary routing continues to run without tracing overhead.
 
 **If working locally:** after changing the C++ source, run `npm run build:wasm` before `npm test` or `npm run dev`. CI compiles the WebAssembly module before tests and the production build. The deployed `routing.wasm` file is rebuilt automatically when this branch is merged.
+
+## Optimized desktop opening video
+
+For the 42-second landscape opening film, upload the provided **24.3 MB, 1920×1080, 30 fps H.264** video to `project/public/hero-desktop.mp4` on this branch before merging its pull request. The existing `project/public/hero.mp4` remains the portrait-oriented mobile background. The React header uses the new file only above 700 px, and falls back to the previous film if the new file cannot load.
+
+The GitHub Pages build copies files from `project/public/` to the published site root. The video tag uses `preload="metadata"`, not a forced full 24 MB download. Users' actual buffering depends on network and decoder performance. If further optimization is needed, encode a shorter loop or serve responsive variants instead of a full 4K background.
