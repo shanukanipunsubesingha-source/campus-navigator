@@ -44,3 +44,10 @@ A GitHub Actions workflow can build and publish the compiled site after this bra
 - Accessible native dialogs, motion preferences, mobile navigation.
 
 No accounts, location tracking or server-side data collection are included.
+
+
+## Optional interactive DSA explorer
+
+The route planner has a **Watch DSA in Action** button. This opens a responsive educational viewer with step-through and play/pause controls, speed options, graph highlights, and the full C++ source with an active-line indicator. Trace events (visits, BFS enqueues, Dijkstra relaxations, ignored closures, and completion) are emitted by the **real C++ WebAssembly engine**, rather than simulated by JavaScript. Ordinary routing continues to run without tracing overhead.
+
+**If working locally:** after changing the C++ source, run `npm run build:wasm` before `npm test` or `npm run dev`. CI compiles the WebAssembly module before tests and the production build. The deployed `routing.wasm` file is rebuilt automatically when this branch is merged.
